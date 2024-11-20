@@ -1,45 +1,95 @@
 import os
-import math
-from collections import Counter
+import sys
+import tempfile
+import subprocess
 from tqdm import tqdm
 
-def calculate_file_entropy(filename):
+def estimate_true_information(path, temp_dir=None):
     """
-    Calculate the entropy of a file in bits per byte, with a progress bar.
-
-    Parameters:
-    filename (str): The path to the file.
-
-    Returns:
-    float: The entropy value.
+    Estimate true information content using zstd compression.
+    Returns compressed size in bytes.
     """
-    file_size = os.path.getsize(filename)
-    if file_size == 0:
-        return 0.0  # Handle empty file
+    if temp_dir is None:
+        temp_dir = tempfile.gettempdir()
+    
+    temp_archive = os.path.join(temp_dir, 'temp_archive.zst')
+    
+    try:
+        if os.path.exists(temp_archive):
+            os.remove(temp_archive)
+        
+        print("Compressing data...")
+        # Compress the directory/file using zstd with maximum compression
+        if os.path.isdir(path):
+            cmd = f'tar -cf - -C "{os.path.dirname(path)}" "{os.path.basename(path)}" | zstd -22 --force -o "{temp_archive}"'
+            print(f"Running command: {cmd}")
+            subprocess.run(cmd, shell=True, check=True, stderr=subprocess.PIPE)
+        else:
+            subprocess.run(
+                ['zstd', '-22', '--force', '-o', temp_archive, path],
+                check=True,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+        
+        compressed_size = os.path.getsize(temp_archive)
+        return compressed_size
+    
+    except subprocess.CalledProcessError as e:
+        print(f"Compression error: {e.stderr}")
+        raise
+    finally:
+        if os.path.exists(temp_archive):
+            os.remove(temp_archive)
 
-    byte_counts = Counter()
-    total_bytes = 0
+def process_path(path):
+    """
+    Process a file or directory and estimate true information content.
+    """
+    if not os.path.exists(path):
+        raise ValueError(f"Path {path} does not exist")
 
-    with open(filename, 'rb') as f, tqdm(total=file_size, unit='B', unit_scale=True, desc='Processing') as pbar:
-        while True:
-            chunk = f.read(65536)  # Read in chunks of 64KB
-            if not chunk:
-                break
-            byte_counts.update(chunk)
-            bytes_read = len(chunk)
-            total_bytes += bytes_read
-            pbar.update(bytes_read)
+    # Calculate original size with progress bar for directories
+    if os.path.isfile(path):
+        size = os.path.getsize(path)
+    else:
+        print("Calculating total size...")
+        size = 0
+        for root, _, files in os.walk(path):
+            for file in files:
+                try:
+                    size += os.path.getsize(os.path.join(root, file))
+                except (OSError, PermissionError) as e:
+                    print(f"Warning: Couldn't access {file}: {e}")
 
-    entropy = 0.0
-    for count in byte_counts.values():
-        p_x = count / total_bytes
-        entropy -= p_x * math.log2(p_x)
-    return entropy
+    print(f"\nAnalyzing: {path}")
+    print(f"Original size: {size / 1000000:.2f} MB")
+    
+    print("Computing true information content...")
+    compressed_size = estimate_true_information(path)
+    
+    print(f"Compressed size: {compressed_size / 1000000:.2f} MB")
+    print(f"True information content (est.): {compressed_size * 8 / 1000000000:.2f} GB")
+    
+    if size > 0:
+        compression_ratio = (size - compressed_size) / size * 100
+        print(f"Compression ratio: {compression_ratio:.1f}%")
 
-import sys
-import os
-entropy_per_byte = calculate_file_entropy(sys.argv[1])
-print("entropy per byte:", entropy_per_byte) 
-file_size_in_bytes = os.path.getsize(sys.argv[1])
-total_information_bits = entropy_per_byte * file_size_in_bytes / (8.0 * 1000000000)
-print(f"Total information in the file: {total_information_bits} GB")
+def main():
+    try:
+        if len(sys.argv) < 2:
+            print("Usage: python entropy.py <file_or_directory_path>")
+            sys.exit(1)
+            
+        path = sys.argv[1]
+        process_path(path)
+        
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
