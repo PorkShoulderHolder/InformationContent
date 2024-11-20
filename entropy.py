@@ -3,6 +3,9 @@ import sys
 import tempfile
 import subprocess
 from tqdm import tqdm
+from collections import Counter
+import math
+import click
 
 def estimate_true_information(path, temp_dir=None):
     """
@@ -42,6 +45,41 @@ def estimate_true_information(path, temp_dir=None):
         if os.path.exists(temp_archive):
             os.remove(temp_archive)
 
+
+def calculate_file_entropy(filename):
+    """
+    Calculate the entropy of a file in bits per byte, with a progress bar.
+
+    Parameters:
+    filename (str): The path to the file.
+
+    Returns:
+    float: The entropy value.
+    """
+    file_size = os.path.getsize(filename)
+    if file_size == 0:
+        return 0.0  # Handle empty file
+
+    byte_counts = Counter()
+    total_bytes = 0
+
+    with open(filename, 'rb') as f, tqdm(total=file_size, unit='B', unit_scale=True, desc='Processing') as pbar:
+        while True:
+            chunk = f.read(65536)  # Read in chunks of 64KB
+            if not chunk:
+                break
+            byte_counts.update(chunk)
+            bytes_read = len(chunk)
+            total_bytes += bytes_read
+            pbar.update(bytes_read)
+
+    entropy = 0.0
+    for count in byte_counts.values():
+        p_x = count / total_bytes
+        entropy -= p_x * math.log2(p_x)
+    return entropy
+
+
 def process_path(path):
     """
     Process a file or directory and estimate true information content.
@@ -75,21 +113,71 @@ def process_path(path):
         compression_ratio = (size - compressed_size) / size * 100
         print(f"Compression ratio: {compression_ratio:.1f}%")
 
-def main():
+@click.group()
+def cli():
+    """
+    Analyze information content of files and directories using different methods.
+    
+    This tool provides two different approaches to estimate information content:
+    
+    1. Compression-based estimation (compress command):
+       Uses zstd compression to estimate true information content.
+       Works with both files and directories.
+    
+    2. Shannon entropy calculation (entropy command):
+       Calculates entropy in bits per byte using Shannon's entropy formula.
+       Works with files only.
+    """
+    pass
+
+@cli.command()
+@click.argument('path', type=click.Path(exists=True))
+def compress(path):
+    """
+    Estimate information content using compression.
+    
+    This command uses zstd compression (level 22) to estimate the true information
+    content of files or directories. It works by:
+    
+    1. Calculating the original size
+    2. Compressing the data using maximum compression
+    3. Measuring the compressed size
+    4. Computing the compression ratio
+    
+    The compressed size provides an upper bound for the true information content.
+    """
     try:
-        if len(sys.argv) < 2:
-            print("Usage: python entropy.py <file_or_directory_path>")
-            sys.exit(1)
-            
-        path = sys.argv[1]
         process_path(path)
-        
-    except KeyboardInterrupt:
-        print("\nOperation cancelled by user")
-        sys.exit(1)
     except Exception as e:
-        print(f"Error: {str(e)}")
+        click.echo(f"Error: {str(e)}", err=True)
+        sys.exit(1)
+
+@cli.command()
+@click.argument('path', type=click.Path(exists=True, dir_okay=False))
+def entropy(path):
+    """
+    Calculate Shannon entropy of a file.
+    
+    This command analyzes a file byte by byte to calculate its Shannon entropy,
+    which measures the average information content per byte. The calculation:
+    
+    1. Counts frequency of each byte value
+    2. Calculates probability distribution
+    3. Computes entropy using Shannon's formula: -sum(p * log2(p))
+    
+    The result is in bits per byte (0-8). Higher values indicate more random/compressed data.
+    Note: This command works only on individual files, not directories.
+    """
+    try:
+        entropy_value = calculate_file_entropy(path)
+        size = os.path.getsize(path)
+        click.echo(f"\nAnalyzing: {path}")
+        click.echo(f"File size: {size / 1000000:.2f} MB")
+        click.echo(f"Entropy: {entropy_value:.2f} bits per byte")
+        click.echo(f"Total information content (est.): {(size * entropy_value) / 8000000000:.2f} GB")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
         sys.exit(1)
 
 if __name__ == '__main__':
-    main()
+    cli()
